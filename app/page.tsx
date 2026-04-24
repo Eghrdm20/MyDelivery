@@ -68,10 +68,17 @@ export default function DeliveryFastApp() {
   const [quote, setQuote] = useState<null | { price: number; time: string; distance: number }>(null)
   const [partnerOnline, setPartnerOnline] = useState(false)
   const [piUser, setPiUser] = useState<string>("")
+  const [paymentLoading, setPaymentLoading] = useState(false)
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY)
-    if (saved) setOrders(JSON.parse(saved))
+    if (saved) {
+      try {
+        setOrders(JSON.parse(saved))
+      } catch {
+        setOrders([])
+      }
+    }
 
     try {
       if (window.Pi) {
@@ -88,6 +95,7 @@ export default function DeliveryFastApp() {
     const completed = orders.filter((o) => o.status === "Delivered")
     const active = orders.filter((o) => !["Delivered", "Cancelled"].includes(o.status))
     const earnings = completed.reduce((sum, o) => sum + o.price, 0)
+
     return {
       total: orders.length,
       completed: completed.length,
@@ -176,6 +184,7 @@ export default function DeliveryFastApp() {
       encodeURIComponent(order.pickup) +
       "&destination=" +
       encodeURIComponent(order.dropoff)
+
     window.open(url, "_blank")
   }
 
@@ -186,11 +195,114 @@ export default function DeliveryFastApp() {
         return
       }
 
-      const auth = await window.Pi.authenticate(["username"], function () {})
+      window.Pi.init({ version: "2.0", sandbox: true })
+
+      const auth = await window.Pi.authenticate(["username"], onIncompletePaymentFound)
+
       setPiUser(auth?.user?.username || "Pi User")
       alert("Pi user connected successfully.")
-    } catch {
+    } catch (error) {
+      console.error(error)
       alert("Pi authentication was cancelled or failed.")
+    }
+  }
+
+  async function approvePayment(paymentId: string) {
+    const response = await fetch("/api/payments/approve", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ paymentId })
+    })
+
+    if (!response.ok) {
+      const text = await response.text()
+      console.error("Payment approval failed:", text)
+      throw new Error("Payment approval failed")
+    }
+
+    return response.json()
+  }
+
+  async function completePayment(paymentId: string, txid: string) {
+    const response = await fetch("/api/payments/complete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ paymentId, txid })
+    })
+
+    if (!response.ok) {
+      const text = await response.text()
+      console.error("Payment completion failed:", text)
+      throw new Error("Payment completion failed")
+    }
+
+    return response.json()
+  }
+
+  async function onIncompletePaymentFound(payment: any) {
+    try {
+      const paymentId = payment?.identifier
+      const txid = payment?.transaction?.txid
+
+      if (paymentId && txid) {
+        await completePayment(paymentId, txid)
+      }
+    } catch (error) {
+      console.error("Incomplete payment handling failed:", error)
+    }
+  }
+
+  async function payTestPi() {
+    try {
+      setPaymentLoading(true)
+
+      if (!window.Pi) {
+        alert("Open this app inside Pi Browser to make a Pi payment.")
+        return
+      }
+
+      window.Pi.init({ version: "2.0", sandbox: true })
+
+      await window.Pi.authenticate(["username", "payments"], onIncompletePaymentFound)
+
+      await window.Pi.createPayment(
+        {
+          amount: 0.01,
+          memo: "Delivery Fast test payment",
+          metadata: {
+            type: "test_payment",
+            app: "Delivery Fast"
+          }
+        },
+        {
+          onReadyForServerApproval: async function (paymentId: string) {
+            await approvePayment(paymentId)
+          },
+
+          onReadyForServerCompletion: async function (paymentId: string, txid: string) {
+            await completePayment(paymentId, txid)
+            alert("Payment completed successfully.")
+          },
+
+          onCancel: function () {
+            alert("Payment cancelled.")
+          },
+
+          onError: function (error: any) {
+            console.error("Payment error:", error)
+            alert("Payment error. Please try again inside Pi Browser.")
+          }
+        }
+      )
+    } catch (error) {
+      console.error(error)
+      alert("Payment failed. Open the app inside Pi Browser and try again.")
+    } finally {
+      setPaymentLoading(false)
     }
   }
 
@@ -208,6 +320,7 @@ export default function DeliveryFastApp() {
           <section className="hero">
             <h2>Fast Local Delivery</h2>
             <p>Quick delivery in your city for food, groceries, documents, packages and more.</p>
+
             <div className="badges">
               <span className="badge">⏱ 30-60 min</span>
               <span className="badge">⭐ Local Partners</span>
@@ -267,14 +380,17 @@ export default function DeliveryFastApp() {
                     <strong>Estimated Price</strong>
                     <span className="price">{quote.price} MAD</span>
                   </div>
+
                   <div className="quote-row">
                     <span>Estimated Time</span>
                     <strong>{quote.time}</strong>
                   </div>
+
                   <div className="quote-row">
                     <span>Distance</span>
                     <strong>{quote.distance} km</strong>
                   </div>
+
                   <button className="btn btn-green" onClick={confirmOrder}>
                     Confirm Order
                   </button>
@@ -283,22 +399,26 @@ export default function DeliveryFastApp() {
             </div>
 
             <h3>What can we deliver?</h3>
+
             <div className="grid">
               <div className="category">
                 <span className="emoji">🍕</span>
                 <strong>Food</strong>
                 <p className="small">20-40 min</p>
               </div>
+
               <div className="category">
                 <span className="emoji">🛒</span>
                 <strong>Groceries</strong>
                 <p className="small">30-60 min</p>
               </div>
+
               <div className="category">
                 <span className="emoji">💊</span>
                 <strong>Pharmacy</strong>
                 <p className="small">15-30 min</p>
               </div>
+
               <div className="category">
                 <span className="emoji">📄</span>
                 <strong>Documents</strong>
@@ -313,6 +433,7 @@ export default function DeliveryFastApp() {
         <section className="content">
           <div className="card">
             <h3>🕘 My Orders</h3>
+
             {orders.length === 0 && <div className="empty">No orders yet. Create your first order.</div>}
 
             {orders.map((order) => (
@@ -370,6 +491,7 @@ export default function DeliveryFastApp() {
                 <h3>🚚 Delivery Partner</h3>
                 <p className="small">{partnerOnline ? "Online - accepting orders" : "Offline - not accepting orders"}</p>
               </div>
+
               <button
                 className={partnerOnline ? "switch on" : "switch"}
                 onClick={() => setPartnerOnline(!partnerOnline)}
@@ -436,6 +558,7 @@ export default function DeliveryFastApp() {
           <div className="card">
             <div className="profile-head">
               <div className="avatar">👤</div>
+
               <div>
                 <h3 style={{ marginBottom: 6 }}>Youssef Benali</h3>
                 <p className="small">Member since Jan 2024</p>
@@ -453,19 +576,23 @@ export default function DeliveryFastApp() {
 
           <div className="card">
             <h3>Statistics</h3>
+
             <div className="stats">
               <div className="stat">
                 <strong>{stats.total}</strong>
                 <span>Total Orders</span>
               </div>
+
               <div className="stat">
                 <strong>{stats.completed}</strong>
                 <span>Delivered</span>
               </div>
+
               <div className="stat">
                 <strong>{stats.active}</strong>
                 <span>Active</span>
               </div>
+
               <div className="stat">
                 <strong>{stats.earnings}</strong>
                 <span>MAD Earned</span>
@@ -475,11 +602,14 @@ export default function DeliveryFastApp() {
 
           <div className="card">
             <h3>Pi Sandbox</h3>
-            <p className="small">
-              Connect inside Pi Browser when testing from Pi Developer Sandbox.
-            </p>
+            <p className="small">Connect inside Pi Browser when testing from Pi Developer Sandbox.</p>
+
             <button className="btn btn-blue" onClick={connectPi}>
               {piUser ? "Connected: " + piUser : "Connect Pi User"}
+            </button>
+
+            <button className="btn btn-green" onClick={payTestPi} disabled={paymentLoading}>
+              {paymentLoading ? "Processing Payment..." : "Pay 0.01 Test Pi"}
             </button>
           </div>
 
@@ -502,14 +632,17 @@ export default function DeliveryFastApp() {
           <span>📦</span>
           Order
         </button>
+
         <button className={tab === "orders" ? "active" : ""} onClick={() => setTab("orders")}>
           <span>🕘</span>
           Orders
         </button>
+
         <button className={tab === "deliver" ? "active" : ""} onClick={() => setTab("deliver")}>
           <span>🚚</span>
           Deliver
         </button>
+
         <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>
           <span>👤</span>
           Profile
@@ -517,4 +650,4 @@ export default function DeliveryFastApp() {
       </nav>
     </main>
   )
-        }
+}
